@@ -2,43 +2,42 @@ import { Transaction, WalletInfo, GraphData, GraphNode, GraphEdge } from "../typ
 import { getLabel, getDisplayName } from "../labels";
 import { getWalletType, calculateRiskScore } from "../utils";
 
-const TRONGRID_BASE = "https://api.trongrid.io";
+const TRONSCAN_BASE = "https://api.tronscan.org/api";
 const TRX_PRICE_USD = 0.13; // Approximate
 
-async function fetchTron(path: string): Promise<unknown> {
-  const res = await fetch(`${TRONGRID_BASE}${path}`, {
-    headers: { Accept: "application/json", "TRON-PRO-API-KEY": "" },
+async function fetchTronScan(path: string): Promise<unknown> {
+  const res = await fetch(`${TRONSCAN_BASE}${path}`, {
+    headers: { Accept: "application/json" },
     next: { revalidate: 60 },
   });
-  if (!res.ok) throw new Error(`TronGrid error: ${res.status}`);
+  if (!res.ok) throw new Error(`TronScan error: ${res.status}`);
   return res.json();
 }
 
 export async function getTronWalletInfo(address: string): Promise<WalletInfo> {
-  const data = await fetchTron(`/v1/accounts/${address}`) as Record<string, unknown>;
-  const accounts = (data.data as Record<string, unknown>[]) || [];
-  const account = accounts[0] || {};
+  const data = await fetchTronScan(`/account?address=${address}`) as Record<string, unknown>;
 
-  const balanceSun = (account.balance as number) || 0;
+  const balanceSun = (data.balance as number) || 0;
   const balanceTRX = balanceSun / 1_000_000;
   const balanceUSD = (balanceTRX * TRX_PRICE_USD).toFixed(2);
+  const txCount = (data.totalTransactionCount as number) || 0;
 
-  const txData = await fetchTron(`/v1/accounts/${address}/transactions?limit=50`).catch(() => ({ data: [] })) as Record<string, unknown>;
-  const txList = (txData.data as Record<string, unknown>[]) || [];
+  const trc20Data = await fetchTronScan(
+    `/token_trc20/transfers?relatedAddress=${address}&limit=50`
+  ).catch(() => ({ token_transfers: [] })) as Record<string, unknown>;
+
+  const txList = (trc20Data.token_transfers as Record<string, unknown>[]) || [];
 
   const relatedAddresses: string[] = [];
   for (const tx of txList) {
-    const rawData = (tx.raw_data as Record<string, unknown>)?.contract as Record<string, unknown>[];
-    if (rawData?.[0]) {
-      const param = rawData[0].parameter as Record<string, unknown>;
-      const value = param?.value as Record<string, string>;
-      if (value?.owner_address) relatedAddresses.push(value.owner_address);
-      if (value?.to_address) relatedAddresses.push(value.to_address);
-    }
+    const from = tx.from_address as string;
+    const to = tx.to_address as string;
+    if (from && from.toLowerCase() !== address.toLowerCase()) relatedAddresses.push(from);
+    if (to && to.toLowerCase() !== address.toLowerCase()) relatedAddresses.push(to);
   }
 
   const uniqueCounterparts = new Set(relatedAddresses).size;
-  const { score, flags } = calculateRiskScore(address, relatedAddresses, txList.length, uniqueCounterparts);
+  const { score, flags } = calculateRiskScore(address, relatedAddresses, txCount, uniqueCounterparts);
 
   const knownLabel = getLabel(address);
 
@@ -47,7 +46,7 @@ export async function getTronWalletInfo(address: string): Promise<WalletInfo> {
     chain: "tron",
     balance: `${balanceTRX.toFixed(4)} TRX`,
     balanceUSD: `$${Number(balanceUSD).toLocaleString()}`,
-    txCount: txList.length,
+    txCount,
     type: knownLabel?.type || getWalletType(address),
     label: knownLabel?.name,
     riskScore: score,
@@ -56,20 +55,22 @@ export async function getTronWalletInfo(address: string): Promise<WalletInfo> {
 }
 
 export async function getTronTransactions(address: string, limit = 50): Promise<Transaction[]> {
-  const trc20Data = await fetchTron(
-    `/v1/accounts/${address}/transactions/trc20?limit=${limit}&only_confirmed=true`
-  ).catch(() => ({ data: [] })) as Record<string, unknown>;
+  const trc20Data = await fetchTronScan(
+    `/token_trc20/transfers?relatedAddress=${address}&limit=${limit}`
+  ).catch(() => ({ token_transfers: [] })) as Record<string, unknown>;
 
-  const items = (trc20Data.data as Record<string, unknown>[]) || [];
+  const items = (trc20Data.token_transfers as Record<string, unknown>[]) || [];
 
   return items.map((tx) => {
-    const from = (tx.from as string) || "";
-    const to = (tx.to as string) || "";
-    const value = Number((tx.value as string) || "0");
-    const token = (tx.token_info as Record<string, string>)?.symbol || "TRC20";
-    const decimals = (tx.token_info as Record<string, number>)?.decimals || 6;
-    const actualValue = value / 10 ** decimals;
-    const timestamp = new Date(Number(tx.block_timestamp as number)).toISOString();
+    const from = (tx.from_address as string) || "";
+    const to = (tx.to_address as string) || "";
+    const quant = Number((tx.quant as string) || "0");
+    const tokenInfo = (tx.tokenInfo as Record<string, unknown>) || {};
+    const token = (tokenInfo.tokenAbbr as string) || "TRC20";
+    const decimals = (tokenInfo.tokenDecimal as number) || 6;
+    const actualValue = quant / 10 ** decimals;
+    const timestamp = new Date(Number(tx.block_ts as number)).toISOString();
+    const success = (tx.finalResult as string) === "SUCCESS" && !(tx.revert as boolean);
 
     const direction =
       from.toLowerCase() === address.toLowerCase() ? "out" : "in";
@@ -82,9 +83,9 @@ export async function getTronTransactions(address: string, limit = 50): Promise<
       valueUSD: token === "USDT" || token === "USDC" ? `$${actualValue.toFixed(2)}` : "-",
       token,
       timestamp,
-      blockNumber: 0,
+      blockNumber: (tx.block as number) || 0,
       direction,
-      status: "success",
+      status: success ? "success" : "failed",
       chain: "tron",
       fromLabel: getDisplayName(from),
       toLabel: getDisplayName(to),
@@ -93,19 +94,21 @@ export async function getTronTransactions(address: string, limit = 50): Promise<
 }
 
 export async function getTronGraph(address: string): Promise<GraphData> {
-  const trc20Data = await fetchTron(
-    `/v1/accounts/${address}/transactions/trc20?limit=100&only_confirmed=true`
-  ).catch(() => ({ data: [] })) as Record<string, unknown>;
+  const trc20Data = await fetchTronScan(
+    `/token_trc20/transfers?relatedAddress=${address}&limit=100`
+  ).catch(() => ({ token_transfers: [] })) as Record<string, unknown>;
 
-  const items = (trc20Data.data as Record<string, unknown>[]) || [];
+  const items = (trc20Data.token_transfers as Record<string, unknown>[]) || [];
 
   const edgeMap = new Map<string, { volume: number; txCount: number; directions: Set<string> }>();
   const counterparts = new Set<string>();
 
   for (const tx of items) {
-    const from = (tx.from as string) || "";
-    const to = (tx.to as string) || "";
-    const value = Number((tx.value as string) || "0") / 1_000_000;
+    const from = (tx.from_address as string) || "";
+    const to = (tx.to_address as string) || "";
+    const quant = Number((tx.quant as string) || "0");
+    const decimals = ((tx.tokenInfo as Record<string, unknown>)?.tokenDecimal as number) || 6;
+    const value = quant / 10 ** decimals;
 
     if (!from || !to) continue;
     const counterpart = from.toLowerCase() === address.toLowerCase() ? to : from;

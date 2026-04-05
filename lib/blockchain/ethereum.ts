@@ -17,7 +17,7 @@ async function fetchBlockscout(path: string): Promise<unknown> {
 export async function getEthereumWalletInfo(address: string): Promise<WalletInfo> {
   const [addressData, txData] = await Promise.allSettled([
     fetchBlockscout(`/addresses/${address}`),
-    fetchBlockscout(`/addresses/${address}/transactions?filter=to%7Cfrom&limit=50`),
+    fetchBlockscout(`/addresses/${address}/transactions`),
   ]);
 
   let balance = "0";
@@ -70,7 +70,7 @@ export async function getEthereumWalletInfo(address: string): Promise<WalletInfo
 
 export async function getEthereumTransactions(address: string, limit = 50): Promise<Transaction[]> {
   const data = await fetchBlockscout(
-    `/addresses/${address}/transactions?filter=to%7Cfrom&limit=${limit}`
+    `/addresses/${address}/transactions`
   ) as Record<string, unknown>;
 
   const items = (data.items as Record<string, unknown>[]) || [];
@@ -114,7 +114,7 @@ export async function getEthereumTransactions(address: string, limit = 50): Prom
 
 export async function getEthereumGraph(address: string): Promise<GraphData> {
   const data = await fetchBlockscout(
-    `/addresses/${address}/transactions?filter=to%7Cfrom&limit=100`
+    `/addresses/${address}/transactions`
   ) as Record<string, unknown>;
 
   const items = (data.items as Record<string, unknown>[]) || [];

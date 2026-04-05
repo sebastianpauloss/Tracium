@@ -14,7 +14,7 @@ export async function getPolygonWalletInfo(address: string): Promise<WalletInfo>
   try {
     const [addrRes, txRes] = await Promise.all([
       fetch(`${BLOCKSCOUT_POLYGON}/addresses/${address}`),
-      fetch(`${BLOCKSCOUT_POLYGON}/addresses/${address}/transactions?limit=1`),
+      fetch(`${BLOCKSCOUT_POLYGON}/addresses/${address}/transactions`),
     ]);
 
     const addrData = addrRes.ok ? await addrRes.json() : {};
@@ -67,7 +67,7 @@ export async function getPolygonTransactions(
 
   try {
     const res = await fetch(
-      `${BLOCKSCOUT_POLYGON}/addresses/${address}/transactions?limit=${limit}`
+      `${BLOCKSCOUT_POLYGON}/addresses/${address}/transactions`
     );
     if (!res.ok) return [];
     const data = await res.json();
